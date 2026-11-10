@@ -382,10 +382,7 @@ struct LspTraceFile {
 impl LspTraceFile {
     /// Reuse the trace path a test configured itself, or create a private one.
     fn for_config(config: &PtySessionConfig) -> io::Result<Self> {
-        let configured = config
-            .env
-            .iter()
-            .find(|(key, _)| key == LSP_TRACE_VARIABLE);
+        let configured = config.env.iter().find(|(key, _)| key == LSP_TRACE_VARIABLE);
         if let Some((_, path)) = configured {
             return Ok(Self {
                 path: PathBuf::from(path),
@@ -750,26 +747,6 @@ impl Drop for PtySession {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::lock_unpoisoned;
-    use std::panic::{self, AssertUnwindSafe};
-    use std::sync::Mutex;
-
-    /// Recovers the PTY serialization lock after an earlier panic poisoned it.
-    #[test]
-    fn lock_unpoisoned_recovers_after_panic() {
-        let mutex = Mutex::new(());
-
-        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-            let _guard = mutex.lock().expect("lock mutex for poison setup");
-            panic!("poison the mutex");
-        }));
-
-        let _guard = lock_unpoisoned(&mutex);
-    }
-}
-
 fn duplicate_fd(fd: RawFd) -> io::Result<RawFd> {
     let dup_fd = unsafe { libc::dup(fd) };
     if dup_fd < 0 {
@@ -806,7 +783,8 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null::<libc::termios>() as _,
-            &mut winsize,
+            // macOS declares this parameter `*mut` and Linux `*const`; a raw pointer fits both.
+            &raw mut winsize,
         )
     };
 
@@ -955,15 +933,13 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
                         }
                     }
                 }
-                'K' => {
-                    if cursor_row > 0 && cursor_row <= rows {
-                        // Clear-to-end-of-line is enough for Ordex because it
-                        // rewrites each row from left to right.
-                        let row = &mut grid[cursor_row - 1];
-                        let start_col = cursor_col.saturating_sub(1).min(cols);
-                        for c in row.iter_mut().skip(start_col) {
-                            *c = ' ';
-                        }
+                'K' if cursor_row > 0 && cursor_row <= rows => {
+                    // Clear-to-end-of-line is enough for Ordex because it
+                    // rewrites each row from left to right.
+                    let row = &mut grid[cursor_row - 1];
+                    let start_col = cursor_col.saturating_sub(1).min(cols);
+                    for c in row.iter_mut().skip(start_col) {
+                        *c = ' ';
                     }
                 }
                 _ => {}
@@ -1089,10 +1065,24 @@ pub fn hello_world_workspace() -> TempTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{self, AssertUnwindSafe};
+
+    /// Recovers the PTY serialization lock after an earlier panic poisoned it.
+    #[test]
+    fn lock_unpoisoned_recovers_after_panic() {
+        let mutex = Mutex::new(());
+
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("lock mutex for poison setup");
+            panic!("poison the mutex");
+        }));
+
+        let _guard = lock_unpoisoned(&mutex);
+    }
 
     #[test]
     fn parse_ansi_screen_ignores_osc_cursor_color_sequences() {
-        let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[1;1HX", 4, 2);
+        let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[2;1HX", 4, 2);
         assert_eq!(snapshot.row(1), Some("X"));
         assert!(snapshot.raw().contains("\x1b]12;#7287fd\x07"));
     }

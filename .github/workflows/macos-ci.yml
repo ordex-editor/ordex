@@ -48,6 +48,13 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # test_utils is not a workspace member, so the commands above skip it.
+      - name: Check test_utils
+        run: |
+          cargo fmt --check --manifest-path crates/test_utils/Cargo.toml
+          cargo clippy --all-targets --manifest-path crates/test_utils/Cargo.toml -- -D warnings
+          cargo test --manifest-path crates/test_utils/Cargo.toml
+
       - name: Build release binary
         run: cargo build --release
 

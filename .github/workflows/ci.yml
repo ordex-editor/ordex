@@ -60,6 +60,13 @@ jobs:
           cargo clippy --all-targets --manifest-path crates/perf_compare/Cargo.toml -- -D warnings
           cargo test --manifest-path crates/perf_compare/Cargo.toml
 
+      # The test_utils harness is not a workspace member either.
+      - name: Check test_utils
+        run: |
+          cargo fmt --check --manifest-path crates/test_utils/Cargo.toml
+          cargo clippy --all-targets --manifest-path crates/test_utils/Cargo.toml -- -D warnings
+          cargo test --manifest-path crates/test_utils/Cargo.toml
+
       - name: Build release binary
         run: cargo build --release
 
