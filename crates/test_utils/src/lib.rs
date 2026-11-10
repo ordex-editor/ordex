@@ -29,6 +29,9 @@ static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// PTY input sequence used to send one backward-delete keystroke.
 pub const PTY_BACKSPACE: &str = "\u{7f}";
 
+/// Environment variable naming the file Ordex appends its LSP traffic to.
+const LSP_TRACE_VARIABLE: &str = "ORDEX_LSP_TRACE";
+
 fn pty_test_lock() -> &'static Mutex<()> {
     PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -244,6 +247,13 @@ impl ScreenSnapshot {
         &self.raw
     }
 
+    /// Return the parsed screen, one terminal row per line.
+    ///
+    /// Unlike `raw`, its size is bounded by the terminal, so it suits failure messages.
+    pub fn screen_text(&self) -> String {
+        self.rows.join("\n")
+    }
+
     /// Return one raw terminal row without translating UI chrome offsets.
     fn terminal_row(&self, one_based_row: usize) -> Option<&str> {
         self.rows
@@ -368,6 +378,47 @@ pub fn wait_for_initial_render(session: &mut PtySession) {
         .expect("wait for initial render");
 }
 
+/// The file one PTY session's language-server traffic is traced to.
+struct LspTraceFile {
+    /// Path the spawned process appends LSP messages to.
+    path: PathBuf,
+    /// Directory holding `path` when the harness created it, removed on drop.
+    _owned_directory: Option<TempTree>,
+}
+
+impl LspTraceFile {
+    /// Reuse the trace path a test configured itself, or create a private one.
+    fn for_config(config: &PtySessionConfig) -> io::Result<Self> {
+        let configured = config.env.iter().find(|(key, _)| key == LSP_TRACE_VARIABLE);
+        if let Some((_, path)) = configured {
+            return Ok(Self {
+                path: PathBuf::from(path),
+                _owned_directory: None,
+            });
+        }
+        let directory = TempTree::with_prefix("ordex_test_lsp_trace")?;
+        Ok(Self {
+            path: directory.path().join("lsp-trace.log"),
+            _owned_directory: Some(directory),
+        })
+    }
+
+    /// Print the trace to stderr so a failing test's output shows the LSP traffic.
+    fn report(&self) {
+        // Sessions that never started a language server leave no trace file.
+        let Ok(trace) = fs::read_to_string(&self.path) else {
+            return;
+        };
+        if trace.is_empty() {
+            return;
+        }
+        eprintln!(
+            "==== LSP trace ({}) ====\n{trace}==== end of LSP trace ====",
+            self.path.display()
+        );
+    }
+}
+
 /// A spawned process attached to a virtual PTY.
 pub struct PtySession {
     child: Child,
@@ -377,6 +428,7 @@ pub struct PtySession {
     rows: usize,
     cache_root: PathBuf,
     _owned_cache_root: Option<TempTree>,
+    lsp_trace: LspTraceFile,
     lock_guard: Option<MutexGuard<'static, ()>>,
 }
 
@@ -396,6 +448,7 @@ impl PtySession {
                 (tree.path().to_path_buf(), Some(tree))
             }
         };
+        let lsp_trace = LspTraceFile::for_config(&config)?;
 
         let (master_fd, slave_fd) = open_pty(config.cols, config.rows)?;
         set_nonblocking(master_fd)?;
@@ -412,6 +465,7 @@ impl PtySession {
             .env("ORDEX_DISABLE_DEFAULT_CONFIG", "1")
             .env("ORDEX_NO_WARNING_PAUSE", "1")
             .env("XDG_CACHE_HOME", &cache_root)
+            .env(LSP_TRACE_VARIABLE, &lsp_trace.path)
             .stdin(unsafe { Stdio::from(File::from_raw_fd(stdin_fd)) })
             .stdout(unsafe { Stdio::from(File::from_raw_fd(stdout_fd)) })
             .stderr(unsafe { Stdio::from(File::from_raw_fd(stderr_fd)) });
@@ -438,14 +492,18 @@ impl PtySession {
             rows: config.rows as usize,
             cache_root,
             _owned_cache_root: owned_cache_root,
+            lsp_trace,
             lock_guard,
         })
     }
 
-    /// Send literal text bytes to the PTY with a short pacing delay.
+    /// Send literal text to the PTY one keystroke at a time with a short pacing delay.
+    ///
+    /// Each keystroke goes out in one write, so a scheduling pause cannot split an
+    /// escape sequence into a bare Escape followed by ordinary keys.
     pub fn send_text(&mut self, text: &str) -> io::Result<()> {
-        for b in text.bytes() {
-            self.master.write_all(&[b])?;
+        for keystroke in keystrokes(text) {
+            self.master.write_all(keystroke.as_bytes())?;
             thread::sleep(Duration::from_millis(2));
         }
         Ok(())
@@ -685,32 +743,52 @@ pub fn spawn_lsp_session_with_config(
 }
 
 impl Drop for PtySession {
+    /// Stop the child, and print its LSP trace when the owning test is failing.
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        // The child is gone by now, so the printed trace is complete.
+        if thread::panicking() {
+            self.lsp_trace.report();
+        }
         self.lock_guard = None;
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::lock_unpoisoned;
-    use std::panic::{self, AssertUnwindSafe};
-    use std::sync::Mutex;
+/// Split `text` into the keystrokes the editor reads: escape sequences and single characters.
+fn keystrokes(text: &str) -> impl Iterator<Item = &str> {
+    let mut remaining = text;
+    std::iter::from_fn(move || {
+        if remaining.is_empty() {
+            return None;
+        }
+        let (keystroke, rest) = remaining.split_at(keystroke_length(remaining));
+        remaining = rest;
+        Some(keystroke)
+    })
+}
 
-    /// Recovers the PTY serialization lock after an earlier panic poisoned it.
-    #[test]
-    fn lock_unpoisoned_recovers_after_panic() {
-        let mutex = Mutex::new(());
-
-        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-            let _guard = mutex.lock().expect("lock mutex for poison setup");
-            panic!("poison the mutex");
-        }));
-
-        let _guard = lock_unpoisoned(&mutex);
+/// Return the byte length of the keystroke at the start of the non-empty `text`.
+fn keystroke_length(text: &str) -> usize {
+    const ESCAPE: char = '\u{1b}';
+    let mut characters = text.chars();
+    let first = characters.next().expect("keystroke text is non-empty");
+    if first != ESCAPE {
+        return first.len_utf8();
+    }
+    match characters.next() {
+        // A lone Escape, or one followed by another Escape, is a keystroke of its own.
+        None | Some(ESCAPE) => 1,
+        // CSI runs through parameter and intermediate bytes up to one final byte.
+        Some('[') => text[2..]
+            .find(|character: char| ('\u{40}'..='\u{7e}').contains(&character))
+            .map_or(text.len(), |offset| 2 + offset + 1),
+        // SS3 carries exactly one more character.
+        Some('O') => 2 + characters.next().map_or(0, char::len_utf8),
+        // Alt+key and Escape-then-key both pair the Escape with one character.
+        Some(follower) => 1 + follower.len_utf8(),
     }
 }
 
@@ -750,7 +828,8 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(RawFd, RawFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null::<libc::termios>() as _,
-            &mut winsize,
+            // macOS declares this parameter `*mut` and Linux `*const`; a raw pointer fits both.
+            &raw mut winsize,
         )
     };
 
@@ -899,15 +978,13 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
                         }
                     }
                 }
-                'K' => {
-                    if cursor_row > 0 && cursor_row <= rows {
-                        // Clear-to-end-of-line is enough for Ordex because it
-                        // rewrites each row from left to right.
-                        let row = &mut grid[cursor_row - 1];
-                        let start_col = cursor_col.saturating_sub(1).min(cols);
-                        for c in row.iter_mut().skip(start_col) {
-                            *c = ' ';
-                        }
+                'K' if cursor_row > 0 && cursor_row <= rows => {
+                    // Clear-to-end-of-line is enough for Ordex because it
+                    // rewrites each row from left to right.
+                    let row = &mut grid[cursor_row - 1];
+                    let start_col = cursor_col.saturating_sub(1).min(cols);
+                    for c in row.iter_mut().skip(start_col) {
+                        *c = ' ';
                     }
                 }
                 _ => {}
@@ -1033,11 +1110,60 @@ pub fn hello_world_workspace() -> TempTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{self, AssertUnwindSafe};
+
+    /// Recovers the PTY serialization lock after an earlier panic poisoned it.
+    #[test]
+    fn lock_unpoisoned_recovers_after_panic() {
+        let mutex = Mutex::new(());
+
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mutex.lock().expect("lock mutex for poison setup");
+            panic!("poison the mutex");
+        }));
+
+        let _guard = lock_unpoisoned(&mutex);
+    }
 
     #[test]
     fn parse_ansi_screen_ignores_osc_cursor_color_sequences() {
-        let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[1;1HX", 4, 2);
+        let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[2;1HX", 4, 2);
         assert_eq!(snapshot.row(1), Some("X"));
         assert!(snapshot.raw().contains("\x1b]12;#7287fd\x07"));
+    }
+
+    /// Escape sequences and multi-byte characters stay whole; splitting one of them
+    /// would let a write pause turn it into separate keys.
+    #[test]
+    fn keystrokes_keep_escape_sequences_and_characters_whole() {
+        let text = "a\u{1b}[D\u{1b}[97;5u\u{1b}OA\u{1b}b\u{1b}\u{7f}é\u{1b}\u{1b}:\u{1b}";
+        assert_eq!(
+            keystrokes(text).collect::<Vec<_>>(),
+            [
+                "a",
+                "\u{1b}[D",
+                "\u{1b}[97;5u",
+                "\u{1b}OA",
+                "\u{1b}b",
+                "\u{1b}\u{7f}",
+                "é",
+                "\u{1b}",
+                "\u{1b}:",
+                "\u{1b}",
+            ]
+        );
+    }
+
+    /// The screen text holds the rendered rows without the escape sequences that drew them.
+    #[test]
+    fn screen_text_joins_rendered_rows_without_escapes() {
+        let snapshot = parse_ansi_screen(b"\x1b[1;1H\x1b[1mtab\x1b[m\x1b[2;1Hbody", 4, 2);
+        assert_eq!(snapshot.screen_text(), "tab\nbody");
+    }
+
+    /// An unterminated CSI sequence is sent whole rather than dropped or split.
+    #[test]
+    fn keystrokes_keep_unterminated_csi_whole() {
+        assert_eq!(keystrokes("\u{1b}[1;5").collect::<Vec<_>>(), ["\u{1b}[1;5"]);
     }
 }

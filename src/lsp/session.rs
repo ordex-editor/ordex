@@ -675,7 +675,7 @@ impl LspSession {
                             &server_name,
                             &workspace_root,
                             "IN",
-                            &format!("{message:?}"),
+                            format_args!("{message:?}"),
                         );
                         match message {
                             ServerMessage::Response { id, result, error } => {
@@ -706,7 +706,7 @@ impl LspSession {
                             &server_name,
                             &workspace_root,
                             "IN",
-                            &format!("transport closed: {error}"),
+                            format_args!("transport closed: {error}"),
                         );
                         shared.fail_transport();
                         break;
@@ -734,7 +734,7 @@ impl LspSession {
                         &server_name,
                         &workspace_root,
                         "OUT",
-                        &format!("transport closed: {error}"),
+                        format_args!("transport closed: {error}"),
                     );
                     // The write failed asynchronously, so nothing is left to report
                     // the failure to the callers already waiting on responses.
@@ -1395,11 +1395,12 @@ impl LspSession {
     /// This never touches the pipe, so it returns regardless of whether the
     /// server is draining its stdin, and callers may hold session locks across it.
     fn write_payload(&self, payload: &json::JsonValue) -> Result<(), SessionError> {
+        // Payloads are JSON-RPC objects, whose `Display` output is their `dump()`.
         append_lsp_trace_line(
             self.server.display_name,
             &self.workspace.root_path,
             "OUT",
-            &payload.dump(),
+            payload,
         );
         let mut framed = Vec::new();
         write_message(&mut framed, payload).map_err(SessionError::Protocol)?;
@@ -2801,7 +2802,14 @@ impl Drop for LspSession {
 }
 
 /// Append one opt-in LSP trace line when `ORDEX_LSP_TRACE` names a writable file.
-fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &str, body: &str) {
+///
+/// `body` is formatted only when tracing is on, so untraced sessions skip rendering messages.
+fn append_lsp_trace_line(
+    server_name: &str,
+    workspace_root: &Path,
+    direction: &str,
+    body: impl fmt::Display,
+) {
     let Ok(path) = std::env::var("ORDEX_LSP_TRACE") else {
         return;
     };
@@ -2812,14 +2820,16 @@ fn append_lsp_trace_line(server_name: &str, workspace_root: &Path, direction: &s
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
+    // An append-mode file places each `write` whole at its end, so building the
+    // line up front keeps lines from concurrent threads from interleaving.
+    let line = format!(
+        "{timestamp_ms} {direction} {server_name} {} {body}\n",
+        workspace_root.display()
+    );
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(
-        file,
-        "{timestamp_ms} {direction} {server_name} {} {body}",
-        workspace_root.display()
-    );
+    let _ = file.write_all(line.as_bytes());
 }
 
 #[cfg(test)]
@@ -3780,6 +3790,77 @@ mod tests {
         assert_eq!(
             after_overflow.to_string(),
             "language server transport closed"
+        );
+    }
+
+    /// Concurrent trace writers each produce whole lines; a writer that emits one
+    /// line through several `write` calls mixes fields from different threads.
+    #[test]
+    fn test_concurrent_trace_lines_stay_whole() {
+        const WRITERS: usize = 8;
+        const LINES_PER_WRITER: usize = 200;
+        let lock = lock_process_environment();
+        let tree = TempTree::new().expect("create trace directory");
+        let trace_path = tree.path().join("lsp-trace.log");
+        let _trace_guard = EnvVarGuard::set(
+            &lock,
+            "ORDEX_LSP_TRACE",
+            trace_path.clone().into_os_string(),
+        );
+        let workspace_root = PathBuf::from("/tmp/workspace");
+        // All writers run at once so their appends overlap in time.
+        thread::scope(|scope| {
+            for writer in 0..WRITERS {
+                let workspace_root = &workspace_root;
+                scope.spawn(move || {
+                    for line in 0..LINES_PER_WRITER {
+                        let body = format!("writer-{writer}-line-{line}");
+                        append_lsp_trace_line("server", workspace_root, "OUT", &body);
+                    }
+                });
+            }
+        });
+
+        let trace = fs::read_to_string(&trace_path).expect("read trace");
+        // Every line must keep the `<timestamp> OUT server <root> <body>` layout.
+        let whole_lines = trace
+            .lines()
+            .filter(|line| {
+                let fields = line.split(' ').collect::<Vec<_>>();
+                fields.len() == 5
+                    && fields[0].parse::<u128>().is_ok()
+                    && fields[1..4] == ["OUT", "server", "/tmp/workspace"]
+                    && fields[4].starts_with("writer-")
+            })
+            .count();
+        assert_eq!(
+            whole_lines,
+            WRITERS * LINES_PER_WRITER,
+            "trace lines were interleaved:\n{trace}"
+        );
+    }
+
+    /// With tracing off, a trace call returns without formatting its body; one
+    /// that formats first trips the panicking `Display` below.
+    #[test]
+    fn test_trace_body_is_not_formatted_when_tracing_is_off() {
+        /// Body that fails the test as soon as anything formats it.
+        struct UnformattableBody;
+
+        impl fmt::Display for UnformattableBody {
+            /// Fail, because a disabled trace must never format its body.
+            fn fmt(&self, _formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                panic!("the trace body was formatted while tracing was off");
+            }
+        }
+
+        let lock = lock_process_environment();
+        let _trace_guard = EnvVarGuard::set(&lock, "ORDEX_LSP_TRACE", String::new().into());
+        append_lsp_trace_line(
+            "server",
+            Path::new("/tmp/workspace"),
+            "OUT",
+            UnformattableBody,
         );
     }
 }

@@ -6366,21 +6366,38 @@ mod tests {
     /// Execute queued write requests with the same filesystem boundary as the app.
     #[cfg(test)]
     fn flush_pending_requests(editor: &mut EditorState) {
+        const MAX_CHAINED_REQUESTS: usize = 128;
+        const SAVE_CONFLICT_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
         let mut lsp_manager = crate::lsp::LspManager::new();
         let mut clipboard = crate::clipboard::ClipboardState::new();
-        for _ in 0..128 {
+        let mut processed_requests = 0;
+        let mut conflict_check_deadline = None;
+        loop {
             editor.poll_background_tasks();
             let Some(request) = editor.take_pending_request() else {
                 if editor.pending_save_conflict_check.is_none() {
                     return;
                 }
-                // Save-conflict checks can complete on another thread, so yielding
-                // lets that worker run before this loop polls again.
-                thread::yield_now();
+                // Save-conflict checks complete on another thread that a loaded
+                // machine may not schedule for a while, so the wait is bounded by
+                // time rather than by the request cap.
+                let deadline = *conflict_check_deadline
+                    .get_or_insert_with(|| Instant::now() + SAVE_CONFLICT_CHECK_TIMEOUT);
+                assert!(
+                    Instant::now() < deadline,
+                    "save-conflict check did not finish within {SAVE_CONFLICT_CHECK_TIMEOUT:?}"
+                );
+                thread::sleep(Duration::from_millis(1));
                 continue;
             };
             // Test helpers still drain request chains, but the hard cap turns a
             // runaway loop into a direct failure instead of hanging the suite.
+            processed_requests += 1;
+            assert!(
+                processed_requests <= MAX_CHAINED_REQUESTS,
+                "flush_pending_requests exceeded {MAX_CHAINED_REQUESTS} chained requests"
+            );
+            conflict_check_deadline = None;
             match request {
                 EditorRequest::ReloadConfig => {
                     panic!("unit tests should assert reload requests directly")
@@ -6410,7 +6427,6 @@ mod tests {
             // avoid starving producers before the next drain iteration.
             thread::yield_now();
         }
-        panic!("flush_pending_requests exceeded 128 chained requests");
     }
 
     /// Apply ordered diagnostics to the active test buffer at `path`.

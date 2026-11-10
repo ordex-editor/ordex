@@ -48,11 +48,26 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # test_utils is not a workspace member, so the commands above skip it.
+      - name: Check test_utils
+        run: |
+          cargo fmt --check --manifest-path crates/test_utils/Cargo.toml
+          cargo clippy --all-targets --manifest-path crates/test_utils/Cargo.toml -- -D warnings
+          cargo test --manifest-path crates/test_utils/Cargo.toml
+
       - name: Build release binary
         run: cargo build --release
 
       - name: Run tests
         run: cargo nextest run --profile ci -- --include-ignored
+
+      - name: Upload JUnit report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-macos
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
       # Enable tmate debugging of manually-triggered workflows if the input option was provided
       - name: Setup tmate session
