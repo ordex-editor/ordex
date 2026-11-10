@@ -247,6 +247,13 @@ impl ScreenSnapshot {
         &self.raw
     }
 
+    /// Return the parsed screen, one terminal row per line.
+    ///
+    /// Unlike `raw`, its size is bounded by the terminal, so it suits failure messages.
+    pub fn screen_text(&self) -> String {
+        self.rows.join("\n")
+    }
+
     /// Return one raw terminal row without translating UI chrome offsets.
     fn terminal_row(&self, one_based_row: usize) -> Option<&str> {
         self.rows
@@ -1145,6 +1152,13 @@ mod tests {
                 "\u{1b}",
             ]
         );
+    }
+
+    /// The screen text holds the rendered rows without the escape sequences that drew them.
+    #[test]
+    fn screen_text_joins_rendered_rows_without_escapes() {
+        let snapshot = parse_ansi_screen(b"\x1b[1;1H\x1b[1mtab\x1b[m\x1b[2;1Hbody", 4, 2);
+        assert_eq!(snapshot.screen_text(), "tab\nbody");
     }
 
     /// An unterminated CSI sequence is sent whole rather than dropped or split.

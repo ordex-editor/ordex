@@ -180,7 +180,7 @@ where
         io::ErrorKind::TimedOut,
         format!(
             "condition not stable before timeout; snapshot:\n{}",
-            last_snapshot.raw()
+            last_snapshot.screen_text()
         ),
     ))
 }
