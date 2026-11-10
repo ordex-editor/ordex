@@ -490,10 +490,13 @@ impl PtySession {
         })
     }
 
-    /// Send literal text bytes to the PTY with a short pacing delay.
+    /// Send literal text to the PTY one keystroke at a time with a short pacing delay.
+    ///
+    /// Each keystroke goes out in one write, so a scheduling pause cannot split an
+    /// escape sequence into a bare Escape followed by ordinary keys.
     pub fn send_text(&mut self, text: &str) -> io::Result<()> {
-        for b in text.bytes() {
-            self.master.write_all(&[b])?;
+        for keystroke in keystrokes(text) {
+            self.master.write_all(keystroke.as_bytes())?;
             thread::sleep(Duration::from_millis(2));
         }
         Ok(())
@@ -744,6 +747,41 @@ impl Drop for PtySession {
             self.lsp_trace.report();
         }
         self.lock_guard = None;
+    }
+}
+
+/// Split `text` into the keystrokes the editor reads: escape sequences and single characters.
+fn keystrokes(text: &str) -> impl Iterator<Item = &str> {
+    let mut remaining = text;
+    std::iter::from_fn(move || {
+        if remaining.is_empty() {
+            return None;
+        }
+        let (keystroke, rest) = remaining.split_at(keystroke_length(remaining));
+        remaining = rest;
+        Some(keystroke)
+    })
+}
+
+/// Return the byte length of the keystroke at the start of the non-empty `text`.
+fn keystroke_length(text: &str) -> usize {
+    const ESCAPE: char = '\u{1b}';
+    let mut characters = text.chars();
+    let first = characters.next().expect("keystroke text is non-empty");
+    if first != ESCAPE {
+        return first.len_utf8();
+    }
+    match characters.next() {
+        // A lone Escape, or one followed by another Escape, is a keystroke of its own.
+        None | Some(ESCAPE) => 1,
+        // CSI runs through parameter and intermediate bytes up to one final byte.
+        Some('[') => text[2..]
+            .find(|character: char| ('\u{40}'..='\u{7e}').contains(&character))
+            .map_or(text.len(), |offset| 2 + offset + 1),
+        // SS3 carries exactly one more character.
+        Some('O') => 2 + characters.next().map_or(0, char::len_utf8),
+        // Alt+key and Escape-then-key both pair the Escape with one character.
+        Some(follower) => 1 + follower.len_utf8(),
     }
 }
 
@@ -1085,5 +1123,33 @@ mod tests {
         let snapshot = parse_ansi_screen(b"\x1b]12;#7287fd\x07\x1b[2;1HX", 4, 2);
         assert_eq!(snapshot.row(1), Some("X"));
         assert!(snapshot.raw().contains("\x1b]12;#7287fd\x07"));
+    }
+
+    /// Escape sequences and multi-byte characters stay whole; splitting one of them
+    /// would let a write pause turn it into separate keys.
+    #[test]
+    fn keystrokes_keep_escape_sequences_and_characters_whole() {
+        let text = "a\u{1b}[D\u{1b}[97;5u\u{1b}OA\u{1b}b\u{1b}\u{7f}é\u{1b}\u{1b}:\u{1b}";
+        assert_eq!(
+            keystrokes(text).collect::<Vec<_>>(),
+            [
+                "a",
+                "\u{1b}[D",
+                "\u{1b}[97;5u",
+                "\u{1b}OA",
+                "\u{1b}b",
+                "\u{1b}\u{7f}",
+                "é",
+                "\u{1b}",
+                "\u{1b}:",
+                "\u{1b}",
+            ]
+        );
+    }
+
+    /// An unterminated CSI sequence is sent whole rather than dropped or split.
+    #[test]
+    fn keystrokes_keep_unterminated_csi_whole() {
+        assert_eq!(keystrokes("\u{1b}[1;5").collect::<Vec<_>>(), ["\u{1b}[1;5"]);
     }
 }
