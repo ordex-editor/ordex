@@ -3,8 +3,8 @@ use std::time::Duration;
 mod lsp_test_support;
 
 use test_utils::{
-    ScreenSnapshot, TempTree, hello_world_workspace, overlay_footer_hidden, spawn_lsp_session,
-    wait_for_startup_analysis_to_settle,
+    ScreenSnapshot, StartupAnalysisWaitOptions, TempTree, hello_world_workspace,
+    overlay_footer_hidden, spawn_lsp_session, wait_for_startup_analysis_to_settle,
 };
 
 /// Return the compiled ordex binary path for PTY-backed LSP tests.
@@ -233,6 +233,17 @@ fn test_lsp_diagnostics_refresh_after_edit() {
             diagnostic_visible(screen, 4, "expected expression")
         })
         .expect("save should surface diagnostics before the local fix");
+    // A `cargo check` still running when the unsaved fix arrives reports the broken file
+    // on disk, and nothing clears that error before the next save, so wait for checks to idle.
+    wait_for_startup_analysis_to_settle(
+        &mut session,
+        StartupAnalysisWaitOptions {
+            idle_samples: 10,
+            idle_timeout: Duration::from_secs(20),
+            require_clear_diagnostics: false,
+            ..Default::default()
+        },
+    );
 
     session.send_text("dd").expect("delete invalid line");
     session
