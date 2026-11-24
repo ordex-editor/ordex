@@ -980,13 +980,15 @@ fn parse_ansi_screen(bytes: &[u8], cols: usize, rows: usize) -> ScreenSnapshot {
                         }
                     }
                 }
-                'K' if cursor_row > 0 && cursor_row <= rows => {
-                    // Clear-to-end-of-line is enough for Ordex because it
-                    // rewrites each row from left to right.
-                    let row = &mut grid[cursor_row - 1];
-                    let start_col = cursor_col.saturating_sub(1).min(cols);
-                    for c in row.iter_mut().skip(start_col) {
-                        *c = ' ';
+                'K' => {
+                    if cursor_row > 0 && cursor_row <= rows {
+                        // Clear-to-end-of-line is enough for Ordex because it
+                        // rewrites each row from left to right.
+                        let row = &mut grid[cursor_row - 1];
+                        let start_col = cursor_col.saturating_sub(1).min(cols);
+                        for c in row.iter_mut().skip(start_col) {
+                            *c = ' ';
+                        }
                     }
                 }
                 _ => {}
