@@ -778,16 +778,18 @@ fn keystroke_length(text: &str) -> usize {
     if first != ESCAPE {
         return first.len_utf8();
     }
+    // Lengths are in bytes; ESC, `[` and `O` are one byte each.
     match characters.next() {
-        // A lone Escape, or one followed by another Escape, is a keystroke of its own.
+        // A lone Escape, or one followed by another Escape, is just the 1-byte ESC.
         None | Some(ESCAPE) => 1,
-        // CSI runs through parameter and intermediate bytes up to one final byte.
+        // CSI ends at its first final byte, 0x40..=0x7E per ECMA-48: skip the 2 bytes of
+        // ESC `[`, then `+ 1` keeps the 1-byte final itself.
         Some('[') => text[2..]
             .find(|character: char| ('\u{40}'..='\u{7e}').contains(&character))
             .map_or(text.len(), |offset| 2 + offset + 1),
-        // SS3 carries exactly one more character.
+        // SS3 is the 2 bytes of ESC `O` plus exactly one character.
         Some('O') => 2 + characters.next().map_or(0, char::len_utf8),
-        // Alt+key and Escape-then-key both pair the Escape with one character.
+        // Alt+key and Escape-then-key: the 1-byte ESC plus one character.
         Some(follower) => 1 + follower.len_utf8(),
     }
 }
