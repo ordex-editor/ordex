@@ -22,6 +22,12 @@ const NON_DRAINING_SERVER_SOURCE: &str = concat!(
 /// Environment variable the fake server reads to pick when it stops reading.
 const WEDGE_POINT_VARIABLE: &str = "ORDEX_FAKE_LSP_WEDGE_AFTER";
 
+/// Environment variable naming the directory the fake server signals this suite through.
+const SIGNAL_DIRECTORY_VARIABLE: &str = "ORDEX_FAKE_LSP_SIGNAL_DIR";
+
+/// File the fake server creates once it holds a definition request it will not answer.
+const REQUEST_PENDING_FILE: &str = "definition-pending";
+
 /// Time a wedged write needs to reach the pipe and stay there.
 ///
 /// The keystroke that probes for liveness has to arrive after the document write
@@ -95,6 +101,10 @@ fn spawn_editor_against_non_draining_server(
             env: vec![
                 ("PATH".to_string(), search_path),
                 (WEDGE_POINT_VARIABLE.to_string(), wedge_point.to_string()),
+                (
+                    SIGNAL_DIRECTORY_VARIABLE.to_string(),
+                    tools.path().display().to_string(),
+                ),
             ],
             ..Default::default()
         },
@@ -206,6 +216,61 @@ fn test_editor_stays_responsive_after_saving_against_a_wedged_server() {
 
     std::thread::sleep(WEDGE_SETTLE_DELAY);
     assert_editor_answers_keys(&mut session);
+}
+
+/// The editor must answer keys while a lookup waits on a server that never replies.
+///
+/// The server keeps reading but answers nothing after the handshake. An editor
+/// that waits for the definition response on its own thread, or behind a lock
+/// that thread needs, stops reacting to keys until the server answers.
+#[test]
+fn test_editor_answers_keys_while_a_lookup_is_pending() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session =
+        spawn_editor_against_non_draining_server(&tools, &project, "unanswered_definition");
+
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("opening frame must be painted");
+
+    // "Resolving definition..." is a one-frame flash, so the server reports
+    // the pending request itself. Waiting through `wait_until` keeps reading
+    // the screen, so the editor never blocks on a full terminal.
+    session.send_text("gd").expect("request definition");
+    let pending_marker = tools.path().join(REQUEST_PENDING_FILE);
+    session
+        .wait_until(Duration::from_secs(10), |_| pending_marker.exists())
+        .expect("the definition request must reach the server");
+    assert_editor_answers_keys(&mut session);
+}
+
+/// A lookup pending when the server exits must fail instead of waiting forever.
+///
+/// The server exits as soon as it reads the definition request, without
+/// answering it. A client that only learns about failures from responses
+/// never reports one.
+#[test]
+fn test_pending_lookup_fails_once_the_language_server_exits() {
+    let tools = TempTree::with_prefix("ordex_liveness_bin").expect("create tool tree");
+    let project = TempTree::with_prefix("ordex_liveness_project").expect("create project");
+    let mut session =
+        spawn_editor_against_non_draining_server(&tools, &project, "exit_on_definition");
+
+    session
+        .wait_until(Duration::from_secs(10), |snapshot| {
+            snapshot.status_line_contains("NORMAL ")
+        })
+        .expect("opening frame must be painted");
+
+    session.send_text("gd").expect("request definition");
+    session
+        .wait_until(Duration::from_secs(15), |snapshot| {
+            snapshot.message_line_contains("language server transport closed")
+        })
+        .expect("the closed transport must fail the pending lookup");
 }
 
 /// Quitting must not wait on a language server that stopped answering.

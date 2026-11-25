@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[allow(
+    clippy::disallowed_types,
+    reason = "the workspace cache is a leaf lock, released before Cargo is queried"
+)]
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -21,6 +25,11 @@ struct RememberedWorkspace {
 /// Every navigation, completion, and document sync resolves the edited file's
 /// project again, so spawning Cargo each time would cost far more than the
 /// request it precedes.
+#[allow(
+    clippy::disallowed_types,
+    reason = "a process-wide cache with no owner thread; each use is a leaf lookup or insert, \
+              released before Cargo is queried"
+)]
 fn remembered_workspaces() -> &'static Mutex<HashMap<PathBuf, RememberedWorkspace>> {
     static WORKSPACES: OnceLock<Mutex<HashMap<PathBuf, RememberedWorkspace>>> = OnceLock::new();
     WORKSPACES.get_or_init(|| Mutex::new(HashMap::new()))

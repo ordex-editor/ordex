@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes PTY tests, which share process-wide terminal state with no owner thread"
+)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +28,10 @@ pub use lsp_ui::{
 pub use process_env::{EnvVarGuard, ProcessEnvLockGuard, lock_process_environment};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes PTY tests, which share process-wide terminal state with no owner thread"
+)]
 static PTY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// PTY input sequence used to send one backward-delete keystroke.
@@ -32,11 +40,19 @@ pub const PTY_BACKSPACE: &str = "\u{7f}";
 /// Environment variable naming the file Ordex appends its LSP traffic to.
 const LSP_TRACE_VARIABLE: &str = "ORDEX_LSP_TRACE";
 
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes PTY tests, which share process-wide terminal state with no owner thread"
+)]
 fn pty_test_lock() -> &'static Mutex<()> {
     PTY_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 /// Acquire a mutex guard even when a prior panic poisoned the lock.
+#[allow(
+    clippy::disallowed_types,
+    reason = "recovers the PTY test lock, which serializes tests with no owner thread"
+)]
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -1118,6 +1134,10 @@ mod tests {
 
     /// Recovers the PTY serialization lock after an earlier panic poisoned it.
     #[test]
+    #[allow(
+        clippy::disallowed_types,
+        reason = "exercises the poison recovery of the PTY test lock"
+    )]
     fn lock_unpoisoned_recovers_after_panic() {
         let mutex = Mutex::new(());
 
