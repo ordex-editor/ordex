@@ -2,8 +2,16 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes tests over the process environment, which has no owner thread"
+)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes tests over the process environment, which has no owner thread"
+)]
 static PROCESS_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Guard proving the current test has exclusive access to process-global environment state.
@@ -19,6 +27,10 @@ pub struct EnvVarGuard<'a> {
 }
 
 /// Return the shared mutex that serializes test access to process-global environment state.
+#[allow(
+    clippy::disallowed_types,
+    reason = "serializes tests over the process environment, which has no owner thread"
+)]
 fn process_env_lock() -> &'static Mutex<()> {
     PROCESS_ENV_LOCK.get_or_init(|| Mutex::new(()))
 }
