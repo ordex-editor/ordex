@@ -7,6 +7,11 @@ ui-responsiveness = { max-threads = 1 }
 [profile.ci]
 fail-fast = false
 
+# Written to target/nextest/ci/junit.xml; failing tests keep their output,
+# including the LSP trace PTY sessions print on failure.
+[profile.ci.junit]
+path = "junit.xml"
+
 [[profile.default.overrides]]
 filter = 'kind(test) and binary(clipboard_test)'
 test-group = 'clipboard-system'

@@ -470,7 +470,10 @@ fn test_ctrl_f_on_main_rs_preserves_comment_coloring() {
             // height=21, scroll_margin=3, page_size=20, alignment_offsets().top=3.
             // 4x ctrl-f in soft-wrap mode: scrolls 80 visual rows. With some lines wrapping,
             // the resulting buffer line is ~80 (soft-wrap row count reduces buffer line advances).
-            snapshot.status_line_contains("80/153:1") && snapshot.raw().contains("\u{1b}[?2026l")
+            // The parsed screen can show a frame that has not finished arriving, so the
+            // position is read from the last complete frame, which the assertions inspect.
+            snapshot.raw().contains("\u{1b}[?2026l")
+                && last_sync_frame(snapshot).contains("80/153:1")
         })
         .expect("four ctrl-f presses should reach the comment block in the frozen fixture");
     let last_frame = last_sync_frame(&snapshot);
